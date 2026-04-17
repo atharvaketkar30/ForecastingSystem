@@ -1,0 +1,45 @@
+[
+  {
+    "id": "launch_event",
+    "type": "step_change",
+    "date": "2025-06-01",
+    "magnitude": 0.35,
+    "affected_projects": [
+      "en.wikipedia"
+    ],
+    "affected_categories": [
+      "tech"
+    ],
+    "description": "New model launch \u2192 35% sustained uplift in tech API usage"
+  },
+  {
+    "id": "price_change",
+    "type": "elasticity_shift",
+    "date": "2023-09-01",
+    "magnitude": -0.2,
+    "affected_projects": [
+      "en.wikipedia"
+    ],
+    "affected_categories": [
+      "tech",
+      "finance"
+    ],
+    "description": "Price increase \u2192 20% demand reduction (elasticity response)"
+  },
+  {
+    "id": "outage_event",
+    "type": "temporary_suppression",
+    "date": "2024-11-15",
+    "duration_days": 3,
+    "magnitude": -0.8,
+    "affected_projects": [
+      "en.wikipedia",
+      "de.wikipedia"
+    ],
+    "affected_categories": [
+      "tech",
+      "finance"
+    ],
+    "description": "3-day outage \u2192 80% traffic suppression"
+  }
+]
