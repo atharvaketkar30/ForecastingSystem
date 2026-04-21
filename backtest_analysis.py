@@ -435,15 +435,24 @@ def _dashboard_payload(results: dict[str, pd.DataFrame | str]) -> dict:
     merged_trends["abs_error"] = merged_trends["error"].abs()
     merged_trends["level"] = merged_trends["unique_id"].map(infer_level)
 
-    # Keep original series for reference
     all_series = sorted(errors["unique_id"].dropna().unique().tolist())
-    # Extract just the hierarchy levels for the dropdown
-    level_nodes = sorted(set(merged_trends["level"].dropna().unique().tolist()))
-    
+    level_nodes = ["total", "project", "category", "article"]
+    series_by_level = {
+        level: sorted(
+            merged_trends.loc[merged_trends["level"] == level, "unique_id"].dropna().unique().tolist()
+        )
+        for level in level_nodes
+    }
+
     model_options = sorted(errors["model"].dropna().unique().tolist())
     cutoff_options = sorted(pd.to_datetime(errors["cutoff"]).dt.strftime("%Y-%m-%d").unique().tolist())
 
     best_row = overall.iloc[0]
+    default_level = "total" if ROOT_ID in all_series else next(
+        (level for level in level_nodes if series_by_level[level]),
+        level_nodes[0],
+    )
+    default_series = ROOT_ID if ROOT_ID in series_by_level.get(default_level, []) else series_by_level[default_level][0]
     report_lines = [line for line in str(results["report"]).splitlines() if line.strip()]
 
     return {
@@ -457,10 +466,12 @@ def _dashboard_payload(results: dict[str, pd.DataFrame | str]) -> dict:
             "cutoff_count": int(errors["cutoff"].nunique()),
         },
         "filters": {
-            "series": level_nodes,
+            "levels": level_nodes,
+            "series_by_level": series_by_level,
             "models": model_options,
             "cutoffs": cutoff_options,
-            "default_series": "total_network" if "total_network" in level_nodes else level_nodes[0],
+            "default_level": default_level,
+            "default_series": default_series,
             "default_model": best_row["model"],
             "default_cutoff": cutoff_options[-1],
         },
@@ -711,7 +722,11 @@ def build_dashboard_html(results: dict[str, pd.DataFrame | str]) -> str:
         <h2 class="section-title">Prediction Explorer</h2>
         <div class="filters">
           <div>
-            <label for="series-select">Series</label>
+            <label for="level-select">Level</label>
+            <select id="level-select"></select>
+          </div>
+          <div>
+            <label for="series-select">Node</label>
             <select id="series-select"></select>
           </div>
           <div>
@@ -981,12 +996,22 @@ def build_dashboard_html(results: dict[str, pd.DataFrame | str]) -> str:
       }});
     }}
 
+    function syncSeriesOptions() {{
+      const level = document.getElementById('level-select').value;
+      const seriesOptions = payload.filters.series_by_level[level] || [];
+      const select = document.getElementById('series-select');
+      const current = select.value;
+      const selected = seriesOptions.includes(current) ? current : (seriesOptions[0] || '');
+      setOptions('series-select', seriesOptions, selected);
+    }}
+
     function renderPredictionExplorer() {{
+      const level = document.getElementById('level-select').value;
       const series = document.getElementById('series-select').value;
       const model = document.getElementById('model-select').value;
       const cutoff = document.getElementById('cutoff-select').value;
       const rows = payload.charts.trends
-        .filter((row) => row.unique_id === series && row.model === model && row.cutoff === cutoff)
+        .filter((row) => row.level === level && row.unique_id === series && row.model === model && row.cutoff === cutoff)
         .sort((a, b) => a.ds.localeCompare(b.ds));
 
       const lineSeries = [
@@ -1017,7 +1042,10 @@ def build_dashboard_html(results: dict[str, pd.DataFrame | str]) -> str:
         const avgAbs = rows.reduce((sum, row) => sum + row.abs_error, 0) / rows.length;
         const avgBias = rows.reduce((sum, row) => sum + row.error, 0) / rows.length;
         document.getElementById('trend-summary').textContent =
-          `${{series}} | ${{model}} | cutoff ${{cutoff}} | average absolute error ${{formatNumber(avgAbs, 0)}} | average bias ${{formatNumber(avgBias, 0)}}`;
+          `${{level}} | ${{series}} | ${{model}} | cutoff ${{cutoff}} | average absolute error ${{formatNumber(avgAbs, 0)}} | average bias ${{formatNumber(avgBias, 0)}}`;
+      }} else {{
+        document.getElementById('trend-summary').textContent =
+          `No rows found for ${{level}} | ${{series}} | ${{model}} | cutoff ${{cutoff}}.`;
       }}
     }}
 
@@ -1031,7 +1059,12 @@ def build_dashboard_html(results: dict[str, pd.DataFrame | str]) -> str:
       document.getElementById('cutoff-count').textContent = formatNumber(payload.summary.cutoff_count);
       document.getElementById('generated-at').textContent = `Dashboard written to data/forecasts/analysis/dashboard.html on ${{payload.generated_at}}.`;
 
-      setOptions('series-select', payload.filters.series, payload.filters.default_series);
+      setOptions('level-select', payload.filters.levels, payload.filters.default_level);
+      setOptions(
+        'series-select',
+        payload.filters.series_by_level[payload.filters.default_level] || [],
+        payload.filters.default_series
+      );
       setOptions('model-select', payload.filters.models, payload.filters.default_model);
       setOptions('cutoff-select', payload.filters.cutoffs, payload.filters.default_cutoff);
 
@@ -1090,6 +1123,10 @@ def build_dashboard_html(results: dict[str, pd.DataFrame | str]) -> str:
         {{ key: 'bias_pct_of_actual', label: 'Bias %', format: formatPct }},
       ]);
 
+      document.getElementById('level-select').addEventListener('change', () => {{
+        syncSeriesOptions();
+        renderPredictionExplorer();
+      }});
       ['series-select', 'model-select', 'cutoff-select'].forEach((id) => {{
         document.getElementById(id).addEventListener('change', renderPredictionExplorer);
       }});
