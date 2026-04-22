@@ -17,3 +17,19 @@ That writes the analysis outputs to `data/forecasts/analysis/`, including:
 - `insight_report.md` for the text summary
 
 Open `data/forecasts/analysis/dashboard.html` in your browser to explore the results.
+
+## Causal effect recovery
+
+Run the Phase 3 causal analysis pipeline:
+
+```bash
+MPLCONFIGDIR=/tmp/matplotlib Forecasting/bin/python causal_analysis.py
+```
+
+That writes outputs to `data/causal/`, including:
+
+- `causal_effects.json` as the machine-readable effect library for downstream scenario modeling
+- `dashboard.html` for causal recovery diagnostics and availability status by intervention
+- per-intervention JSON artifacts such as `launch_event.json`, `price_change.json`, and `outage_event.json`
+
+Open `data/causal/dashboard.html` in your browser to inspect the causal diagnostics.
