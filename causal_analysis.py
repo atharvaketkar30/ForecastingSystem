@@ -96,6 +96,10 @@ def _affected_ids(intervention: dict) -> list[str]:
     return [f"{project}/{category}" for project, category in _affected_pairs(intervention)]
 
 
+def _has_intervention_label(labels: pd.Series, intervention_id: str) -> pd.Series:
+    return labels.fillna("").astype(str).str.split("|").apply(lambda ids: intervention_id in ids)
+
+
 def _aggregate_category_views(processed: pd.DataFrame) -> pd.DataFrame:
     out = (
         processed.groupby(["project", "category", "date"], as_index=False)["views_injected"]
@@ -554,7 +558,7 @@ def run_outage_attribution(processed: pd.DataFrame, intervention: dict) -> Metho
     event_mask = category_views["date"].between(iv_date, end_date)
     if event_mask.sum() == 0:
         diagnostics["reason"] = "no_event_window_in_observed_data"
-        diagnostics["processed_labels_present"] = bool((processed["interventions_id"] == intervention["id"]).any())
+        diagnostics["processed_labels_present"] = bool(_has_intervention_label(processed["interventions_id"], intervention["id"]).any())
         return _make_unavailable_result(intervention, "regression_counterfactual", diagnostics)
 
     treated = (
@@ -565,26 +569,34 @@ def run_outage_attribution(processed: pd.DataFrame, intervention: dict) -> Metho
         .rename("treated")
     )
     donor_ids = sorted([sid for sid in category_views["series_id"].unique().tolist() if sid not in treated_ids])
+    if len(donor_ids) < 1:
+        diagnostics["reason"] = "no_eligible_donors"
+        diagnostics["donor_series"] = donor_ids
+        return _make_unavailable_result(intervention, "regression_counterfactual", diagnostics)
     donor_panel = (
         category_views[category_views["series_id"].isin(donor_ids)]
         .pivot(index="date", columns="series_id", values="views")
         .sort_index()
     )
+    if donor_panel.empty or donor_panel.shape[1] == 0:
+        diagnostics["reason"] = "empty_donor_panel"
+        diagnostics["donor_series"] = donor_ids
+        return _make_unavailable_result(intervention, "regression_counterfactual", diagnostics)
     aligned = pd.concat([treated, donor_panel], axis=1, join="inner").dropna()
     pre_mask = aligned.index < iv_date
-    post_mask = aligned.index.between(iv_date, end_date)
+    post_mask = (aligned.index >= iv_date) & (aligned.index <= end_date)
     if pre_mask.sum() < 14:
         diagnostics["reason"] = "insufficient_pre_period"
         diagnostics["pre_days"] = int(pre_mask.sum())
         return _make_unavailable_result(intervention, "regression_counterfactual", diagnostics)
 
-    X_pre = donor_panel.loc[pre_mask].fillna(donor_panel.loc[pre_mask].median())
-    y_pre = treated.loc[pre_mask]
+    X_pre = aligned.loc[pre_mask, donor_panel.columns].fillna(aligned.loc[pre_mask, donor_panel.columns].median())
+    y_pre = aligned.loc[pre_mask, "treated"]
     reg = LinearRegression()
     reg.fit(X_pre, y_pre)
-    X_full = donor_panel.loc[aligned.index].fillna(donor_panel.loc[aligned.index].median())
+    X_full = aligned.loc[:, donor_panel.columns].fillna(aligned.loc[:, donor_panel.columns].median())
     counterfactual = pd.Series(reg.predict(X_full), index=aligned.index, name="counterfactual")
-    effect = treated.loc[aligned.index] - counterfactual
+    effect = aligned["treated"] - counterfactual
     pct_effect = np.where(counterfactual > 0, effect / counterfactual, np.nan)
     post_pct = pd.Series(pct_effect, index=aligned.index).loc[post_mask]
     ci_lower, ci_upper = _interval(post_pct)

@@ -51,36 +51,17 @@ SERIES_HEIRARCHY = {
     },
 }
 
-INTERVENTIONS = [
-    {
-        "id": "launch_event",
-        "type": "step_change",
-        "date": "2025-06-01",
-        "magnitude": 0.35,
-        "affected_projects": ["en.wikipedia"],
-        "affected_categories": ["tech"],
-        "description": "New model launch → 35% sustained uplift in tech API usage",
-    },
-    {
-        "id": "price_change",
-        "type": "elasticity_shift",
-        "date": "2023-09-01",
-        "magnitude": -0.20,
-        "affected_projects": ["en.wikipedia"],
-        "affected_categories": ["tech", "finance"],
-        "description": "Price increase → 20% demand reduction (elasticity response)",
-    },
-    {
-        "id": "outage_event",
-        "type": "temporary_suppression",
-        "date": "2024-11-15",
-        "duration_days": 3,
-        "magnitude": -0.80,
-        "affected_projects": ["en.wikipedia", "de.wikipedia"],
-        "affected_categories": ["tech", "finance"],
-        "description": "3-day outage → 80% traffic suppression",
-    },
-]
+def load_interventions() -> list[dict]:
+    return json.loads(IV_PATH.read_text())
+
+
+def _append_intervention_ids(existing: object, intervention_id: str) -> str:
+    if existing is None or pd.isna(existing):
+        return intervention_id
+    labels = [label for label in str(existing).split("|") if label]
+    if intervention_id not in labels:
+        labels.append(intervention_id)
+    return "|".join(labels)
 
 ## ----- Layer 1 Raw Pull to Parquet ----- ##
 
@@ -153,10 +134,12 @@ def apply_interventions():
         ORDER BY project, category, article, date
     """).fetchdf()
 
-    df["views_injected"] = df["views"].astype(float)
-    df["interventions_id"] = None
+    interventions = load_interventions()
 
-    for iv in INTERVENTIONS:
+    df["views_injected"] = df["views"].astype(float)
+    df["interventions_id"] = pd.Series([None] * len(df), dtype="object")
+
+    for iv in interventions:
         iv_date = pd.to_datetime(iv["date"])
         mask = (
             df["date"] >= iv_date
@@ -170,11 +153,17 @@ def apply_interventions():
         elif iv["type"] == "elasticity_shift":
             df.loc[mask, "views_injected"] *= (1 + iv["magnitude"])
         elif iv["type"] == "temporary_suppression":
-            end_date = iv_date + pd.Timedelta(days=iv["duration_days"])
+            end_date = iv_date + pd.Timedelta(days=iv["duration_days"] - 1)
             temp_mask = mask & (df["date"] <= end_date)
             df.loc[temp_mask, "views_injected"] *= (1 + iv["magnitude"])
-        
-        df.loc[mask, "interventions_id"] = iv["id"]
+            df.loc[temp_mask, "interventions_id"] = df.loc[temp_mask, "interventions_id"].apply(
+                lambda existing: _append_intervention_ids(existing, iv["id"])
+            )
+            continue
+
+        df.loc[mask, "interventions_id"] = df.loc[mask, "interventions_id"].apply(
+            lambda existing: _append_intervention_ids(existing, iv["id"])
+        )
 
     np.random.seed(42)
     df["views_injected"] = (
@@ -187,7 +176,6 @@ def apply_interventions():
     out_path = PROCESSED_DIR / "processed_data.parquet"
     df.to_parquet(out_path, index=False)
 
-    IV_PATH.write_text(json.dumps(INTERVENTIONS, indent=2))
     print(f"Processed data with interventions applied. Output at {out_path}")
 
 ### ----- Layer 3: Feature Engineering + DuckDB SQL ----- ###
@@ -203,10 +191,11 @@ def build_features():
     """
     con = duckdb.connect()
 
-    interventions_by_id = {iv["id"]: iv for iv in INTERVENTIONS}
+    interventions = load_interventions()
+    interventions_by_id = {iv["id"]: iv for iv in interventions}
     iv_dates = {iv_id: pd.to_datetime(iv["date"]) for iv_id, iv in interventions_by_id.items()}
     outage_iv = interventions_by_id["outage_event"]
-    outage_end = iv_dates["outage_event"] + pd.Timedelta(days=outage_iv["duration_days"])
+    outage_end = iv_dates["outage_event"] + pd.Timedelta(days=outage_iv["duration_days"] - 1)
 
     df = con.execute(f"""
         SELECT project, category, article, date, log_views, interventions_id
@@ -285,7 +274,7 @@ def run_sanity_check():
     print("\n Launch injection check (should see uplift post vs pre):")
     launch_check = con.execute(f"""
         SELECT 
-            CASE WHEN date < '2023-06-01' THEN 'pre_launch' ELSE 'post_launch' END AS period,
+            CASE WHEN date < '2024-06-01' THEN 'pre_launch' ELSE 'post_launch' END AS period,
             AVG(views_injected) AS avg_views,
             AVG(views) AS avg_views_original
         FROM read_parquet('{PROCESSED_DIR}/processed_data.parquet')
@@ -297,7 +286,7 @@ def run_sanity_check():
 
 if __name__ == "__main__":
     end_date = datetime.now(timezone.utc).strftime("%Y%m%d")
-    start_date = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y%m%d")
+    start_date = (datetime.now(timezone.utc) - timedelta(weeks=104)).strftime("%Y%m%d")
     pull_all_series(start_date, end_date)
     apply_interventions()
     build_features()
