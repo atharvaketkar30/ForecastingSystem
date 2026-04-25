@@ -286,7 +286,7 @@ def run_sanity_check():
 
 if __name__ == "__main__":
     end_date = datetime.now(timezone.utc).strftime("%Y%m%d")
-    start_date = (datetime.now(timezone.utc) - timedelta(weeks=104)).strftime("%Y%m%d")
+    start_date = (datetime.now(timezone.utc) - timedelta(weeks=156)).strftime("%Y%m%d")
     pull_all_series(start_date, end_date)
     apply_interventions()
     build_features()
